@@ -59,7 +59,7 @@ var isExe = (operatingSystem) => {
 }
 
 var getFileVersion = (filePath, next) => {
-  if (isWindows()) {
+  if (false/*isWindows()*/) {
     var cmd = 'wmic datafile where name="' + path.resolve(filePath).replace(/\\/g, "\\\\") + '" get Version';
     exec(cmd, (err, stdout, stderr) => {
       if(!err){
@@ -69,10 +69,74 @@ var getFileVersion = (filePath, next) => {
         }
         var fileVersion = split[1];
         console.log(fileVersion);
-        next(fileVersion)
+        next(fileVersion);
       } else {
-        console.log(err)
+        console.log(err);
       }
+    });
+  } else {
+    fs.open(filePath, 'r', function(err, fd) {
+      var buffer = new Buffer(64);
+      fs.read(fd, buffer, 0, buffer.length, 0, function (err, bytes) {
+
+        if (err) throw err;
+
+        // Print only read bytes to avoid junk.
+        if (bytes > 0) {
+          if (buffer.toString('ascii', 0, 2) == "MZ") {
+            var headerOffset = buffer.readInt32LE(60);
+            if (headerOffset >= 64) {
+              var headerBuffer = new Buffer(24);
+              fs.read(fd, headerBuffer, 0, headerBuffer.length, headerOffset, function (err, bytes) {
+                if (bytes > 0) {
+                  if (headerBuffer.toString('ascii', 0, 2) == "PE") {
+                    var machine = headerBuffer.readInt16LE(4);
+                    if (machine == 332) {
+                      var noSections = headerBuffer.readInt16LE(6);
+                      var optHdrSize = headerBuffer.readInt16LE(20);
+                      var sectionBuffer = new Buffer(noSections * 40);
+                      fs.read(fd, sectionBuffer, 0, sectionBuffer.length, headerOffset + headerBuffer.length + optHdrSize, function (err, bytes) {
+                        var resFound = false;
+                        if (bytes > 0) {
+                          for (var i = 0; i < noSections; i++) {
+                            var index = i * 40;
+                            var section = sectionBuffer.slice(index, index + 40);
+                            if (section.toString('ascii', 0, 5) == ".rsrc") {
+                              var infoVirt = section.readInt32LE(12);
+                              var infoSize = section.readInt32LE(16);
+                              var infoOffset = section.readInt32LE(20);
+                              var infoBuffer = new Buffer(infoSize);
+                              fs.read(fd, infoBuffer, 0, infoBuffer.length, infoOffset, function (err, bytes) {
+                                if (bytes > 0) {
+                                  var numDirs = infoBuffer.readInt16LE(14);
+                                  for (var j = 0; j < numDirs; j++) {
+                                    var index = 16 + j * 8;
+                                    var type = infoBuffer.readInt32LE(index);
+                                    if (type == 16) {
+                                      var subOffset = infoBuffer.readInt32LE(index + 4) & 0x7fffffff;
+                                      var infoOffset = infoBuffer.readInt32LE((infoBuffer.readInt32LE(subOffset + 20) & 0x7fffffff) + 20);
+                                      var dataOffset = infoBuffer.readInt32LE(infoOffset) - infoVirt;
+                                      var dataSize = infoBuffer.readInt32LE(infoOffset + 4);
+                                      var codePage = infoBuffer.readInt32LE(infoOffset + 8);
+                                      var versionOffset = dataOffset + 48;
+                                      var version = infoBuffer.readInt16LE(versionOffset + 2) + "." + infoBuffer.readInt16LE(versionOffset) + "." + infoBuffer.readInt16LE(versionOffset + 6) + "." + infoBuffer.readInt16LE(versionOffset + 4);
+                                      next(version);
+                                    }
+                                  }
+                                }
+                              });
+                            }
+                          }
+                        }
+                      });
+                    }
+                  }
+                }
+              });
+            }
+          }
+        }
+      });
     });
   }
 }
@@ -86,7 +150,8 @@ var downloadUncompressedFile = (operatingSystem, version) => {
 
   var compressedFilePath = compressedFileName;
   var uncompressedFilePath = uncompressedFileName;
-  if (!fs.existsSync(uncompressedFilePath)) {
+  var fileExists = fs.existsSync(uncompressedFilePath);
+  if (!fileExists) {
     request({
       uri: getGameClientFile(operatingSystem, String(version)),
       method: 'GET' })
@@ -183,7 +248,7 @@ var getPackageList = (operatingSystem, version, next) => {
   });
 }
 
-var operatingSystem = MAC_OSX;
+var operatingSystem = WINDOWS;
 getVersionsList(operatingSystem, (versionList) => {
   /*
   var arr = [];
@@ -198,7 +263,7 @@ getVersionsList(operatingSystem, (versionList) => {
   }
   versionList = arr;
   */
-  var length = versionList.length
+  var length = versionList.length;
   for (var i = 0; i < length; i++) {
     var version = versionList[i];
     downloadUncompressedFile(operatingSystem, version);
